@@ -75,6 +75,55 @@ def copyAndroidDrawables = tasks.register('copyAndroidDrawablesForDesktop', Copy
     into(androidDrawablesDir.map { it.dir('drawable') })
 }
 
+// libmpv for the desktop player (the same engine the iOS app uses). Pinned to one shinchiro
+// build and checked by hash, so a moved or replaced download fails the build instead of shipping.
+def libmpvUrl = (project.findProperty('nuvio.libmpv.url') ?:
+    'https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261021/mpv-dev-x86_64-20261021-git-e471496c56.7z').toString()
+def libmpvSha256 = (project.findProperty('nuvio.libmpv.sha256') ?:
+    'efc719eff3dc5954b4a5efc800632808bcec01cc9034940dd14e5eb7fe9ea633').toString()
+def libmpvRoot = layout.buildDirectory.dir('libmpv')
+def libmpvDir = libmpvRoot.map { it.dir('windows-x64') }
+def fetchLibmpv = tasks.register('fetchLibmpv') {
+    def archive = layout.buildDirectory.file('libmpv-download/mpv-dev.7z')
+    def outputDir = libmpvDir
+    inputs.property('url', libmpvUrl)
+    inputs.property('sha256', libmpvSha256)
+    outputs.dir(outputDir)
+    doLast {
+        def archiveFile = archive.get().asFile
+        archiveFile.parentFile.mkdirs()
+        def sha256 = { File file ->
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            file.withInputStream { stream ->
+                byte[] buffer = new byte[65536]
+                int read
+                while ((read = stream.read(buffer)) > 0) digest.update(buffer, 0, read)
+            }
+            digest.digest().encodeHex().toString()
+        }
+        if (!archiveFile.isFile() || sha256(archiveFile) != libmpvSha256) {
+            logger.lifecycle("Downloading $libmpvUrl")
+            new URL(libmpvUrl).withInputStream { input -> archiveFile.withOutputStream { it << input } }
+            def actual = sha256(archiveFile)
+            if (actual != libmpvSha256) {
+                archiveFile.delete()
+                throw new GradleException("libmpv download hash $actual does not match the pinned $libmpvSha256")
+            }
+        }
+        def sevenZip = ['C:\\Program Files\\7-Zip\\7z.exe', 'C:\\Program Files (x86)\\7-Zip\\7z.exe']
+            .find { new File(it).isFile() } ?: '7z'
+        def target = outputDir.get().asFile
+        target.deleteDir()
+        target.mkdirs()
+        def process = [sevenZip, 'e', '-y', "-o${target.absolutePath}", archiveFile.absolutePath, 'libmpv-2.dll']
+            .execute()
+        process.consumeProcessOutput(System.out, System.err)
+        if (process.waitFor() != 0 || !new File(target, 'libmpv-2.dll').isFile()) {
+            throw new GradleException('Could not extract libmpv-2.dll (is 7-Zip installed?)')
+        }
+    }
+}
+
 def kotlinClassLoader = project.extensions.getByName('kotlin').class.classLoader
 def jvmTargetClass = kotlinClassLoader.loadClass('org.jetbrains.kotlin.gradle.dsl.JvmTarget')
 
@@ -115,6 +164,17 @@ tasks.matching { it.name == 'desktopTest' }.configureEach {
     testLogging { showStandardStreams = true }
 }
 
+// `run` and tests load libmpv straight from the build dir; packaged apps get it as an app resource.
+tasks.matching { it.name in ['desktopTest', 'run'] }.configureEach {
+    dependsOn(fetchLibmpv)
+    systemProperty('nuvio.libmpv.dir', libmpvDir.get().asFile.absolutePath)
+}
+tasks.matching { it.name == 'prepareAppResources' }.configureEach { dependsOn(fetchLibmpv) }
+// `gradlew run -Pnuvio.dataDir=...` starts with a clean profile instead of %APPDATA%\Nuvio.
+tasks.matching { it.name == 'run' }.configureEach {
+    if (project.hasProperty('nuvio.dataDir')) systemProperty('nuvio.dataDir', project.property('nuvio.dataDir').toString())
+}
+
 tasks.matching { it.name == 'compileKotlinDesktop' }.configureEach { dependsOn(generateDesktopConfig) }
 tasks.matching { it.name == 'desktopProcessResources' }.configureEach { dependsOn(copyAndroidDrawables) }
 
@@ -138,7 +198,9 @@ compose {
                 description = 'Nuvio media hub'
                 vendor = 'Nuvio desktop fork'
                 licenseFile.set(rootProject.file('LICENSE'))
-                appResourcesRootDir.set(project.layout.projectDirectory.dir('desktopResources'))
+                // Compose copies the `windows-x64` subfolder into the app; LibMpv finds it via
+                // compose.application.resources.dir.
+                appResourcesRootDir.set(libmpvRoot)
                 modules('java.net.http', 'java.sql', 'jdk.unsupported', 'jdk.crypto.ec', 'java.naming', 'jdk.httpserver', 'jdk.accessibility')
                 windows {
                     menuGroup = 'Nuvio'

@@ -179,7 +179,7 @@ fun main(args: Array<String>) {
                     DesktopWindowState.toggleFullscreen()
                     true
                 } else {
-                    false
+                    DesktopPlayerKeys.handle(event)
                 }
             },
         ) {
