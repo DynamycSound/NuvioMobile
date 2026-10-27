@@ -35,7 +35,9 @@ if (xcconfig.exists()) {
         if (parts.length == 2) versionProps[parts[0].trim()] = parts[1].trim()
     }
 }
-def desktopVersionName = (project.findProperty('nuvio.desktop.versionName') ?: versionProps.MARKETING_VERSION ?: '0.0.0').toString()
+// Release builds pass the upstream tag as nuvio.app.versionName, like upstream's Android release.
+def desktopVersionName = (project.findProperty('nuvio.desktop.versionName') ?: project.findProperty('nuvio.app.versionName') ?:
+    versionProps.MARKETING_VERSION ?: '0.0.0').toString()
 def desktopVersionCode = (versionProps.CURRENT_PROJECT_VERSION ?: '1').toInteger()
 def desktopUpdateRepo = (project.findProperty('nuvio.desktop.updateRepo') ?: System.getenv('NUVIO_DESKTOP_UPDATE_REPO') ?: 'DynamycSound/NuvioMobile').toString()
 

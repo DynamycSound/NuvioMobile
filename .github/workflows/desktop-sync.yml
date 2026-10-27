@@ -1,0 +1,222 @@
+name: Desktop sync
+
+# Once a week: merge upstream's cmp-rewrite into `desktop`, build and test the Windows app, and
+# publish an MSI under the same tag as upstream's newest release. The desktop app's updater reads
+# this fork's releases (AppUpdateSource.repository) and installs the `.msi` after checking its
+# `.msi.sha256`.
+#
+# Upstream's own workflows (store, issue bots, Android/iOS releases) are kept off this branch: they
+# would act on this fork, and a push that changes workflow files needs a token with the
+# `workflows` permission, which GITHUB_TOKEN never has. The merge step drops them every time.
+#
+# Scheduled runs only start from the repository's default branch, and GitHub pauses them after
+# 60 days without activity in the repository; the weekly merge commit counts as activity.
+
+on:
+  schedule:
+    - cron: '23 3 * * 1' # Mondays 03:23 UTC
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild and replace the installer of upstream's newest release even if it is already published
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: NuvioMedia/NuvioMobile
+  UPSTREAM_BRANCH: cmp-rewrite
+  DESKTOP_BRANCH: desktop
+  KEEP_WORKFLOW: .github/workflows/desktop-sync.yml
+
+jobs:
+  sync:
+    name: Merge, test and release
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out the desktop branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.DESKTOP_BRANCH }}
+          fetch-depth: 0
+          # Optional: a token with the workflows permission, only needed if GitHub ever rejects
+          # the merge push because upstream's history touches workflow files.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream "${UPSTREAM_BRANCH}"
+
+          if git merge-base --is-ancestor "upstream/${UPSTREAM_BRANCH}" HEAD; then
+            echo "Already up to date with ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}." >> "$GITHUB_STEP_SUMMARY"
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git merge --no-ff --no-commit "upstream/${UPSTREAM_BRANCH}" || true
+
+          # Drop every upstream workflow, including ones upstream changed (modify/delete
+          # conflicts) or added, and keep this file as it is on the desktop branch.
+          git ls-files --stage -- .github/workflows | awk '{print $4}' | sort -u | while read -r path; do
+            [[ "$path" == "$KEEP_WORKFLOW" ]] && continue
+            git rm -q --force --cached -- "$path"
+            rm -f -- "$path"
+          done
+          git checkout HEAD -- "$KEEP_WORKFLOW"
+
+          conflicts="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$conflicts" ]]; then
+            {
+              echo "### Upstream merge needs a person"
+              echo "These files conflict between \`${DESKTOP_BRANCH}\` and \`${UPSTREAM_BRANCH}\`:"
+              echo '```'
+              echo "$conflicts"
+              echo '```'
+              echo "Merge locally (\`git fetch upstream && git merge upstream/${UPSTREAM_BRANCH}\`), fix, push, then run this workflow again."
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+
+          upstream_sha="$(git rev-parse --short "upstream/${UPSTREAM_BRANCH}")"
+          git commit -q --no-edit -m "Merge upstream ${UPSTREAM_BRANCH} (${upstream_sha})"
+          {
+            echo "Merged ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} ${upstream_sha}:"
+            echo '```'
+            git log --oneline --no-merges HEAD^1..HEAD^2 | head -n 50
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+      - name: Decide whether to publish
+        id: release
+        env:
+          REBUILD: ${{ inputs.rebuild || false }}
+        run: |
+          latest="$(gh release list --repo "$UPSTREAM_REPO" --exclude-drafts --limit 1 --json tagName,isPrerelease --jq '.[0]')"
+          tag="$(jq -r '.tagName // empty' <<< "$latest")"
+          prerelease="$(jq -r '.isPrerelease // false' <<< "$latest")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+          publish=true
+          reason=""
+          if [[ -z "$tag" ]]; then
+            publish=false; reason="upstream has no release"
+          else
+            git fetch --no-tags upstream "refs/tags/${tag}:refs/upstream-tags/${tag}"
+            # The installer's version comes from the merged code, so the merged code must be
+            # that release: same build number in the version file as the tagged commit.
+            version_file=iosApp/Configuration/Version.xcconfig
+            build_of() { git show "$1:$version_file" | sed -nE 's/^[[:space:]]*CURRENT_PROJECT_VERSION[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' | head -n 1; }
+            if ! git merge-base --is-ancestor "refs/upstream-tags/${tag}" HEAD; then
+              publish=false; reason="${tag} is not in ${UPSTREAM_BRANCH} yet"
+            elif [[ "$(build_of "refs/upstream-tags/${tag}")" != "$(build_of HEAD)" ]]; then
+              publish=false; reason="upstream bumped the version after ${tag} but has not released it yet"
+            elif gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+                --jq '[.assets[].name | select(endswith(".msi"))] | length' 2>/dev/null | grep -qv '^0$' \
+                && [[ "$REBUILD" != "true" ]]; then
+              publish=false; reason="${tag} already has a Windows installer"
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [[ "$publish" == "true" ]]; then
+            echo "Publishing the Windows build of ${tag}." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No release this run: ${reason}." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up JDK 17
+        if: steps.merge.outputs.merged == 'true' || steps.release.outputs.publish == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        if: steps.merge.outputs.merged == 'true' || steps.release.outputs.publish == 'true'
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Write build properties
+        if: steps.merge.outputs.merged == 'true' || steps.release.outputs.publish == 'true'
+        env:
+          PROPERTIES_BASE64: ${{ secrets.NUVIO_LOCAL_PROPERTIES_BASE64 }}
+        run: |
+          # Optional API keys (Trakt, Simkl, ...), same secret name as upstream's release workflow.
+          if [[ -n "$PROPERTIES_BASE64" ]]; then
+            printf '%s' "$PROPERTIES_BASE64" | base64 --decode > local.properties
+            sed -i -E '/^[[:space:]]*sdk\.dir[[:space:]]*=/d' local.properties
+          else
+            : > local.properties
+            echo "No NUVIO_LOCAL_PROPERTIES_BASE64 secret: building without optional API keys." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Test the desktop app
+        if: steps.merge.outputs.merged == 'true' || steps.release.outputs.publish == 'true'
+        # Upstream's shared tests run in upstream's CI; these are the fork's own desktop checks.
+        # Compiling the test source set still compiles all shared tests against the desktop target.
+        run: >
+          ./gradlew :composeApp:desktopTest
+          --tests 'com.nuvio.app.features.updater.DesktopUpdaterTest'
+          --tests 'com.nuvio.app.features.player.mpv.MpvPlayerTest'
+          --stacktrace
+
+      - name: Build the installer
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          ./gradlew :composeApp:packageMsi -Pnuvio.app.versionName="$TAG" --stacktrace
+          mkdir -p dist
+          msi="$(ls composeApp/build/compose/binaries/main/msi/*.msi | head -n 1)"
+          name="Nuvio-${TAG}-windows-x64.msi"
+          cp "$msi" "dist/$name"
+          (cd dist && sha256sum "$name" | sed 's/ \*/  /' > "$name.sha256")
+          cat "dist/$name.sha256"
+
+      - name: Push the merge
+        if: steps.merge.outputs.merged == 'true'
+        run: git push origin "HEAD:${DESKTOP_BRANCH}"
+
+      - name: Publish the release
+        if: steps.release.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          {
+            gh release view "$TAG" --repo "$UPSTREAM_REPO" --json body --jq '.body'
+            echo
+            echo "---"
+            echo "Windows build of [${UPSTREAM_REPO} ${TAG}](https://github.com/${UPSTREAM_REPO}/releases/tag/${TAG}), from \`${DESKTOP_BRANCH}\` at $(git rev-parse --short HEAD)."
+          } > dist/notes.md
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.msi dist/*.msi.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            flags=()
+            if [[ "$PRERELEASE" == "true" ]]; then flags+=(--prerelease --latest=false); else flags+=(--latest); fi
+            gh release create "$TAG" dist/*.msi dist/*.msi.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$(git rev-parse HEAD)" \
+              --title "$TAG" \
+              --notes-file dist/notes.md \
+              "${flags[@]}"
+          fi
