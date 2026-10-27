@@ -153,6 +153,7 @@ internal fun initializePlatformStorage() {
 @OptIn(ExperimentalComposeUiApi::class)
 fun main(args: Array<String>) {
     initializePlatformStorage()
+    configureDesktopUpdates()
     args.firstOrNull { it.contains("://") }?.let(::handleAppUrl)
 
     application {

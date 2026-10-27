@@ -40,7 +40,7 @@ internal object AppUpdaterRepository {
     suspend fun getLatestChannelUpdate(channel: UpdateChannel): Result<AppUpdate> = runCatching {
         val response = httpRequestRaw(
             method = "GET",
-            url = "https://api.github.com/repos/NuvioMedia/NuvioMobile/${releasePath(channel)}",
+            url = "https://api.github.com/repos/${AppUpdateSource.repository}/${releasePath(channel)}",
             headers = mapOf(
                 "Accept" to "application/vnd.github+json",
                 "User-Agent" to "NuvioMobile",
@@ -90,10 +90,7 @@ internal object AppUpdaterRepository {
         assets: List<GitHubAssetDto>,
         supportedAbis: List<String>,
     ): GitHubAssetDto? {
-        val apkAssets = assets.filter { asset ->
-            asset.name.endsWith(".apk", ignoreCase = true) ||
-                asset.contentType == "application/vnd.android.package-archive"
-        }
+        val apkAssets = assets.filter { asset -> AppUpdateSource.isInstallerAsset(asset.name, asset.contentType) }
         for (abi in supportedAbis) {
             apkAssets.firstOrNull { it.name.contains(abi, ignoreCase = true) }?.let { return it }
         }

@@ -114,7 +114,10 @@ class AppUpdaterController internal constructor(
             result.onSuccess { update ->
                 val remoteNewer = VersionUtils.isRemoteNewer(update.tag, AppVersionConfig.VERSION_NAME)
                 val ignored = ignoredTag != null && ignoredTag == update.tag
-                val shouldShowDialog = remoteNewer && (force || !ignored)
+                // With automatic updates on, a launch check downloads quietly and only asks to restart.
+                val autoDownload = remoteNewer && !force && !ignored &&
+                    AppUpdateSource.autoUpdate?.enabled?.value == true
+                val shouldShowDialog = remoteNewer && (force || !ignored) && !autoDownload
 
                 _uiState.update { state ->
                     state.copy(
@@ -131,6 +134,8 @@ class AppUpdaterController internal constructor(
                         errorMessage = null,
                     )
                 }
+
+                if (autoDownload) startDownload(installWhenDone = false)
 
                 if (showNoUpdateFeedback && !remoteNewer) {
                     NuvioToastController.show(noUpdateMessage(channel))
@@ -188,7 +193,9 @@ class AppUpdaterController internal constructor(
         dismissDialog()
     }
 
-    fun downloadUpdate() {
+    fun downloadUpdate() = startDownload(installWhenDone = true)
+
+    private fun startDownload(installWhenDone: Boolean) {
         if (_uiState.value.isDownloading) return
         val update = _uiState.value.update ?: return
         if (_uiState.value.isDebugTest) {
@@ -233,9 +240,10 @@ class AppUpdaterController internal constructor(
                         downloadProgress = null,
                         downloadedApkPath = path,
                         errorMessage = null,
+                        showDialog = state.showDialog || !installWhenDone,
                     )
                 }
-                installDownloadedUpdate()
+                if (installWhenDone) installDownloadedUpdate()
             }.onFailure { error ->
                 _uiState.update { state ->
                     state.copy(

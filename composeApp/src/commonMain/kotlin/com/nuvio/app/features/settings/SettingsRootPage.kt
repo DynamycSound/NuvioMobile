@@ -223,6 +223,7 @@ internal fun LazyListScope.settingsRootContent(
                     if (onCheckForUpdatesClick != null) {
                         SettingsGroupDivider(isTablet = isTablet)
                         UpdateChannelSettingsRow(isTablet = isTablet)
+                        AutoUpdateSettingsRow(isTablet = isTablet)
                         SettingsGroupDivider(isTablet = isTablet)
                         SettingsNavigationRow(
                             title = stringResource(Res.string.compose_settings_root_check_updates_title),

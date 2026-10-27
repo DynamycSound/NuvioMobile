@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings added by the Windows fork; kept apart from strings.xml so upstream merges stay clean. -->
+<resources>
+    <string name="updates_auto_install_title">Install updates automatically</string>
+    <string name="updates_auto_install_description">Download new versions in the background and ask only to restart. When off, updates install only from Check for updates.</string>
+</resources>
