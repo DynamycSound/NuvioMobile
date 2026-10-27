@@ -231,6 +231,8 @@ plugins {
     alias(libs.plugins.kotlinxSerialization)
 }
 
+apply(from = "desktop.gradle") // Windows desktop target (fork only)
+
 val supabaseProps = Properties().apply {
     val propsFile = rootProject.file("local.properties")
     if (propsFile.exists()) propsFile.inputStream().use { load(it) }

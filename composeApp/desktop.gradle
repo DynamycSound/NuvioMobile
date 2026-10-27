@@ -1,0 +1,155 @@
+// Windows desktop target for the DynamycSound/NuvioMobile fork.
+//
+// Everything desktop-specific lives here and in src/desktopMain so upstream merges into the
+// `desktop` branch stay conflict-free; composeApp/build.gradle.kts only applies this file.
+// It is a Groovy script on purpose: script plugins cannot see the Kotlin/Compose plugin classes
+// at compile time, and Groovy resolves the `kotlin {}` / `compose {}` extensions dynamically.
+
+import org.gradle.api.artifacts.VersionCatalogsExtension
+
+def catalog = project.extensions.getByType(VersionCatalogsExtension).named('libs')
+def composeVersion = catalog.findVersion('composeMultiplatform').get().requiredVersion
+def ktorVersion = catalog.findVersion('ktor').get().requiredVersion
+def coroutinesVersion = catalog.findVersion('kotlinx-coroutines').get().requiredVersion
+def quickJsVersion = catalog.findVersion('quickjsKt').get().requiredVersion
+def ksoupVersion = catalog.findVersion('ksoup').get().requiredVersion
+
+def desktopLibs = [
+    "org.jetbrains.compose.desktop:desktop-jvm-windows-x64:$composeVersion",
+    "org.jetbrains.kotlinx:kotlinx-coroutines-swing:$coroutinesVersion",
+    "io.ktor:ktor-client-okhttp:$ktorVersion",
+    "com.squareup.okhttp3:okhttp:4.12.0",
+    "io.github.dokar3:quickjs-kt-jvm:$quickJsVersion",
+    "com.fleeksoft.ksoup:ksoup:$ksoupVersion",
+    "net.java.dev.jna:jna:5.17.0",
+    "net.java.dev.jna:jna-platform:5.17.0",
+]
+
+// Upstream keeps the app version in the iOS xcconfig; the desktop build reuses it so fork
+// releases carry the same version as the upstream tag they were built from.
+def versionProps = [:]
+def xcconfig = rootProject.file('iosApp/Configuration/Version.xcconfig')
+if (xcconfig.exists()) {
+    xcconfig.readLines().each { line ->
+        def parts = line.split('=', 2)
+        if (parts.length == 2) versionProps[parts[0].trim()] = parts[1].trim()
+    }
+}
+def desktopVersionName = (project.findProperty('nuvio.desktop.versionName') ?: versionProps.MARKETING_VERSION ?: '0.0.0').toString()
+def desktopVersionCode = (versionProps.CURRENT_PROJECT_VERSION ?: '1').toInteger()
+def desktopUpdateRepo = (project.findProperty('nuvio.desktop.updateRepo') ?: System.getenv('NUVIO_DESKTOP_UPDATE_REPO') ?: 'DynamycSound/NuvioMobile').toString()
+
+// MSI only compares MAJOR.MINOR.BUILD (MAJOR >= 1, BUILD <= 65535). Upstream bumps
+// CURRENT_PROJECT_VERSION on every release, so it becomes BUILD: every release is an upgrade.
+def nameParts = desktopVersionName.tokenize('.-')
+def msiMajor = Math.max(1, (nameParts[0] ?: '0').toInteger())
+def msiMinor = (nameParts.size() > 1 && nameParts[1].isInteger()) ? nameParts[1].toInteger() : 0
+def desktopMsiVersion = "${msiMajor}.${msiMinor}.${desktopVersionCode}"
+
+def generatedDesktopConfigDir = layout.buildDirectory.dir('generated/desktop-config/kotlin')
+def generateDesktopConfig = tasks.register('generateDesktopConfig') {
+    def outputDir = generatedDesktopConfigDir
+    inputs.property('versionName', desktopVersionName)
+    inputs.property('versionCode', desktopVersionCode)
+    inputs.property('updateRepo', desktopUpdateRepo)
+    outputs.dir(outputDir)
+    doLast {
+        def dir = outputDir.get().asFile.toPath().resolve('com/nuvio/app/desktop').toFile()
+        dir.mkdirs()
+        new File(dir, 'DesktopBuildConfig.kt').text = """\
+package com.nuvio.app.desktop
+
+internal object DesktopBuildConfig {
+    const val VERSION_NAME = "$desktopVersionName"
+    const val VERSION_CODE = $desktopVersionCode
+    const val UPDATE_REPO = "$desktopUpdateRepo"
+}
+"""
+    }
+}
+
+// Android vector drawables used by the ported painters; copied onto the desktop classpath.
+def androidDrawablesDir = layout.buildDirectory.dir('generated/desktop-resources')
+def copyAndroidDrawables = tasks.register('copyAndroidDrawablesForDesktop', Copy) {
+    from('src/androidMain/res/drawable') { include '*.xml' }
+    into(androidDrawablesDir.map { it.dir('drawable') })
+}
+
+def kotlinClassLoader = project.extensions.getByName('kotlin').class.classLoader
+def jvmTargetClass = kotlinClassLoader.loadClass('org.jetbrains.kotlin.gradle.dsl.JvmTarget')
+
+kotlin {
+    jvm('desktop') {
+        compilerOptions {
+            jvmTarget.set(Enum.valueOf(jvmTargetClass, 'JVM_17'))
+        }
+    }
+    sourceSets.getByName('desktopMain') {
+        kotlin.srcDir('src/fullCommonMain/kotlin')
+        kotlin.srcDir(generatedDesktopConfigDir)
+        resources.srcDir(androidDrawablesDir)
+        dependencies {
+            desktopLibs.each { implementation(it) }
+        }
+    }
+    sourceSets.getByName('desktopTest') {
+        dependencies {
+            implementation("org.jetbrains.compose.ui:ui-test-junit4:$composeVersion")
+            implementation('junit:junit:4.13.2')
+        }
+    }
+}
+
+// UI smoke test that drives the real App() against live addons; opt-in with -Pnuvio.smoke because
+// it needs network. Runs against a throwaway data dir so it never touches the user's profile.
+tasks.matching { it.name == 'desktopTest' }.configureEach {
+    def smoke = project.hasProperty('nuvio.smoke')
+    def smokeDir = layout.buildDirectory.dir('desktop-smoke')
+    inputs.property('smoke', smoke)
+    doFirst {
+        smokeDir.get().asFile.deleteDir()
+        systemProperty('nuvio.smoke', smoke.toString())
+        systemProperty('nuvio.dataDir', smokeDir.get().dir('data').asFile.absolutePath)
+        systemProperty('nuvio.smoke.out', smokeDir.get().dir('shots').asFile.absolutePath)
+    }
+    testLogging { showStandardStreams = true }
+}
+
+tasks.matching { it.name == 'compileKotlinDesktop' }.configureEach { dependsOn(generateDesktopConfig) }
+tasks.matching { it.name == 'desktopProcessResources' }.configureEach { dependsOn(copyAndroidDrawables) }
+
+def composeClassLoader = project.extensions.getByName('compose').class.classLoader
+def targetFormatClass = composeClassLoader.loadClass('org.jetbrains.compose.desktop.application.dsl.TargetFormat')
+
+compose {
+    desktop {
+        application {
+            mainClass = 'com.nuvio.app.desktop.MainKt'
+            jvmArgs.addAll([
+                '-Xmx2g',
+                '-Dfile.encoding=UTF-8',
+                '--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED',
+                '--add-opens=java.desktop/java.awt=ALL-UNNAMED',
+            ])
+            nativeDistributions {
+                targetFormats(Enum.valueOf(targetFormatClass, 'Msi'))
+                packageName = 'Nuvio'
+                packageVersion = desktopMsiVersion
+                description = 'Nuvio media hub'
+                vendor = 'Nuvio desktop fork'
+                licenseFile.set(rootProject.file('LICENSE'))
+                appResourcesRootDir.set(project.layout.projectDirectory.dir('desktopResources'))
+                modules('java.net.http', 'java.sql', 'jdk.unsupported', 'jdk.crypto.ec', 'java.naming', 'jdk.httpserver', 'jdk.accessibility')
+                windows {
+                    menuGroup = 'Nuvio'
+                    perUserInstall = true
+                    dirChooser = false
+                    shortcut = true
+                    menu = true
+                    upgradeUuid = '6f1b8f2e-5a0c-4c55-9a43-3f0d1e7b2a91'
+                    iconFile.set(project.file('src/desktopMain/resources/icons/nuvio.ico'))
+                }
+            }
+        }
+    }
+}
