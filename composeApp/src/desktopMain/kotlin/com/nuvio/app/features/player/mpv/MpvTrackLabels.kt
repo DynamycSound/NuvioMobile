@@ -34,8 +34,9 @@ internal object MpvTrackLabels {
     }
 
     private fun channelLayoutName(channels: String, channelCount: Int): String? {
-        val normalized = channels.trim()
-        if (normalized.isNotEmpty() && normalized != "unknown") {
+        // mpv names a layout it cannot identify "unknown6", and qualifies known ones ("5.1(side)").
+        val normalized = channels.trim().substringBefore('(')
+        if (normalized.isNotEmpty() && !normalized.startsWith("unknown")) {
             return when (normalized.lowercase()) {
                 "mono" -> "Mono"
                 "stereo" -> "Stereo"

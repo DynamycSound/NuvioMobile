@@ -3,6 +3,7 @@ package com.nuvio.app.desktop
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -19,6 +20,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.LocalWindowExceptionHandlerFactory
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
@@ -152,6 +154,7 @@ internal fun initializePlatformStorage() {
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main(args: Array<String>) {
+    DesktopCrashHandler.installThreadHandler()
     initializePlatformStorage()
     configureDesktopUpdates()
     args.firstOrNull { it.contains("://") }?.let(::handleAppUrl)
@@ -166,59 +169,61 @@ fun main(args: Array<String>) {
             BitmapPainter(Image.makeFromEncoded(bytes).toComposeImageBitmap())
         }
 
-        Window(
-            onCloseRequest = {
-                DesktopPreferences.flushAll()
-                DesktopTray.remove()
-                exitApplication()
-            },
-            state = windowState,
-            title = "Nuvio",
-            icon = icon,
-            onPreviewKeyEvent = { event ->
-                if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
-                    DesktopWindowState.toggleFullscreen()
-                    true
-                } else {
-                    DesktopPlayerKeys.handle(event)
-                }
-            },
-        ) {
-            DisposableEffect(window) {
-                window.minimumSize = Dimension(900, 600)
-                DesktopWindowState.window = window
-                val listener = object : WindowAdapter() {
-                    override fun windowIconified(e: WindowEvent) = DesktopWindowState.setVisible(false)
-                    override fun windowDeiconified(e: WindowEvent) = DesktopWindowState.setVisible(true)
-                }
-                window.addWindowListener(listener)
-                onDispose {
-                    window.removeWindowListener(listener)
-                    DesktopWindowState.window = null
-                }
-            }
-            LaunchedEffect(Unit) {
-                DesktopWindowState.fullscreen.collect { fullscreen ->
-                    windowState.placement = if (fullscreen) WindowPlacement.Fullscreen else WindowPlacement.Floating
-                }
-            }
-
-            // Esc is already a back gesture in Compose desktop; the mouse "back" button is added here.
-            val dispatcher = LocalNavigationEventDispatcherOwner.current?.navigationEventDispatcher
-            val mouseBack = remember { DirectNavigationEventInput() }
-            DisposableEffect(dispatcher) {
-                dispatcher?.addInput(mouseBack)
-                onDispose { dispatcher?.removeInput(mouseBack) }
-            }
-
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
-                        if (event.button == PointerButton.Back) mouseBack.backCompleted()
-                    },
+        CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides DesktopCrashHandler) {
+            Window(
+                onCloseRequest = {
+                    DesktopPreferences.flushAll()
+                    DesktopTray.remove()
+                    exitApplication()
+                },
+                state = windowState,
+                title = "Nuvio",
+                icon = icon,
+                onPreviewKeyEvent = { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
+                        DesktopWindowState.toggleFullscreen()
+                        true
+                    } else {
+                        DesktopPlayerKeys.handle(event)
+                    }
+                },
             ) {
-                App()
+                DisposableEffect(window) {
+                    window.minimumSize = Dimension(900, 600)
+                    DesktopWindowState.window = window
+                    val listener = object : WindowAdapter() {
+                        override fun windowIconified(e: WindowEvent) = DesktopWindowState.setVisible(false)
+                        override fun windowDeiconified(e: WindowEvent) = DesktopWindowState.setVisible(true)
+                    }
+                    window.addWindowListener(listener)
+                    onDispose {
+                        window.removeWindowListener(listener)
+                        DesktopWindowState.window = null
+                    }
+                }
+                LaunchedEffect(Unit) {
+                    DesktopWindowState.fullscreen.collect { fullscreen ->
+                        windowState.placement = if (fullscreen) WindowPlacement.Fullscreen else WindowPlacement.Floating
+                    }
+                }
+
+                // Esc is already a back gesture in Compose desktop; the mouse "back" button is added here.
+                val dispatcher = LocalNavigationEventDispatcherOwner.current?.navigationEventDispatcher
+                val mouseBack = remember { DirectNavigationEventInput() }
+                DisposableEffect(dispatcher) {
+                    dispatcher?.addInput(mouseBack)
+                    onDispose { dispatcher?.removeInput(mouseBack) }
+                }
+
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .onPointerEvent(PointerEventType.Press, PointerEventPass.Initial) { event ->
+                            if (event.button == PointerButton.Back) mouseBack.backCompleted()
+                        },
+                ) {
+                    App()
+                }
             }
         }
     }

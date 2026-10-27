@@ -72,9 +72,30 @@ internal object DesktopBuildConfig {
 
 // Android vector drawables used by the ported painters; copied onto the desktop classpath.
 def androidDrawablesDir = layout.buildDirectory.dir('generated/desktop-resources')
+// Compose desktop's XML vector loader only reads literal colours, so Android's framework colours
+// become hex here; any other resource reference fails the build instead of crashing the screen
+// that draws the icon.
+def androidFrameworkColors = [
+    '@android:color/transparent': '#00000000',
+    '@android:color/white'      : '#FFFFFFFF',
+    '@android:color/black'      : '#FF000000',
+]
 def copyAndroidDrawables = tasks.register('copyAndroidDrawablesForDesktop', Copy) {
     from('src/androidMain/res/drawable') { include '*.xml' }
     into(androidDrawablesDir.map { it.dir('drawable') })
+    inputs.property('androidFrameworkColors', androidFrameworkColors)
+    eachFile { details ->
+        details.filter { String line ->
+            def result = line
+            androidFrameworkColors.each { ref, hex -> result = result.replace("\"$ref\"", "\"$hex\"") }
+            def unresolved = (result =~ /"([@?][^"]*(color|attr)\/[^"]*)"/)
+            if (unresolved.find()) {
+                throw new GradleException("${details.name} uses ${unresolved.group(1)}, which the desktop app cannot " +
+                    "draw: add its colour to androidFrameworkColors in desktop.gradle")
+            }
+            result
+        }
+    }
 }
 
 // libmpv for the desktop player (the same engine the iOS app uses). Pinned to one shinchiro

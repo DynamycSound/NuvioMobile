@@ -356,27 +356,19 @@ internal class MpvPlayer private constructor(
 
     fun setSubtitleDelayMs(delayMs: Int) = setProperty("sub-delay", secondsString(delayMs.toLong()))
 
-    fun applySubtitleStyle(
-        textColor: String,
-        backgroundColor: String,
-        outlineColor: String,
-        outlineSize: Float,
-        bold: Boolean,
-        fontSize: Float,
-        subPos: Int,
-        stripSdh: Boolean,
-    ) {
+    fun applySubtitleStyle(style: MpvSubtitleStyle) {
         setProperty("sub-ass-override", "no")
-        setProperty("sub-color", textColor)
-        setProperty("sub-back-color", backgroundColor)
-        setProperty("sub-outline-color", outlineColor)
-        setProperty("sub-border-style", if (backgroundColor.startsWith("#00")) "outline-and-shadow" else "opaque-box")
-        setProperty("sub-bold", if (bold) "yes" else "no")
-        setProperty("sub-outline-size", outlineSize.toString())
-        setProperty("sub-font-size", fontSize.toString())
-        setProperty("sub-pos", subPos.toString())
-        setProperty("sub-filter-sdh", if (stripSdh) "yes" else "no")
-        setProperty("sub-filter-sdh-harder", if (stripSdh) "yes" else "no")
+        setProperty("sub-color", style.textColor)
+        setProperty("sub-back-color", style.backgroundColor)
+        setProperty("sub-outline-color", style.outlineColor)
+        setProperty("sub-border-style", style.borderStyle)
+        setProperty("sub-bold", if (style.bold) "yes" else "no")
+        setProperty("sub-outline-size", style.outlineSize.toString())
+        setProperty("sub-shadow-offset", style.boxMargin.toString())
+        setProperty("sub-font-size", style.fontSize.toString())
+        setProperty("sub-pos", style.subPos.toString())
+        setProperty("sub-filter-sdh", if (style.stripSdh) "yes" else "no")
+        setProperty("sub-filter-sdh-harder", if (style.stripSdh) "yes" else "no")
     }
 
     /** Same rules as the iOS bridge's refreshPlaybackState. */

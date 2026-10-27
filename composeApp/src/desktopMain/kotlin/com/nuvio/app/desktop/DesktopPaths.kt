@@ -25,6 +25,13 @@ object DesktopPaths {
             .also { it.mkdirs() }
     }
 
+    /** Crash reports; next to the cache in `%LOCALAPPDATA%\Nuvio`. */
+    val logsDir: File by lazy {
+        (override?.let { File(it, "logs") }
+            ?: File(env("LOCALAPPDATA") ?: "${System.getProperty("user.home")}/AppData/Local", "Nuvio/logs"))
+            .also { it.mkdirs() }
+    }
+
     val downloadsDir: File by lazy {
         File(System.getProperty("user.home"), "Videos/Nuvio").also { it.mkdirs() }
     }

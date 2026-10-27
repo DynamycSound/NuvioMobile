@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.nuvio.app.desktop.DesktopPlayerKeys
 import com.nuvio.app.desktop.DesktopWindowState
 import com.nuvio.app.features.player.mpv.MpvPlayer
+import com.nuvio.app.features.player.mpv.MpvSubtitleStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -297,17 +298,8 @@ private class DesktopPlayerController(
     override fun setSubtitleDelayMs(delayMs: Int) =
         player.setSubtitleDelayMs(delayMs.coerceIn(SUBTITLE_DELAY_MIN_MS, SUBTITLE_DELAY_MAX_MS))
 
-    override fun applySubtitleStyle(style: SubtitleStyleState) = player.applySubtitleStyle(
-        textColor = style.textColor.toMpvColorString(),
-        backgroundColor = style.backgroundColor.toMpvColorString(),
-        outlineColor = style.outlineColor.toMpvColorString(),
-        outlineSize = if (style.outlineEnabled) style.outlineWidth.toFloat() else 0f,
-        bold = style.bold,
-        // Same scale as iOS, which also renders subtitles with mpv/libass.
-        fontSize = (style.fontSizeSp * 3f).coerceIn(18f, 96f),
-        subPos = (100 - (style.bottomOffset / 2)).coerceIn(0, 150),
-        stripSdh = style.stripSdh,
-    )
+    override fun applySubtitleStyle(style: SubtitleStyleState) =
+        player.applySubtitleStyle(MpvSubtitleStyle.from(style))
 
     override suspend fun getMediaInfo(): PlayerMediaInfo = withContext(Dispatchers.IO) {
         mpvMediaInfo { name -> player.getString(name)?.ifBlank { null } }
@@ -337,7 +329,3 @@ private class DesktopPlayerController(
     }
 }
 
-private fun Color.toMpvColorString(): String {
-    fun Float.hex() = (this * 255f).toInt().coerceIn(0, 255).toString(16).padStart(2, '0').uppercase()
-    return "#" + alpha.hex() + red.hex() + green.hex() + blue.hex()
-}
