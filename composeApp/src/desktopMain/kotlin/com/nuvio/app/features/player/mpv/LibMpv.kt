@@ -57,6 +57,8 @@ internal interface LibMpv : Library {
         const val RENDER_PARAM_SW_FORMAT = 18
         const val RENDER_PARAM_SW_STRIDE = 19
         const val RENDER_PARAM_SW_POINTER = 20
+        const val RENDER_PARAM_D3D11_INIT_PARAMS = 21
+        const val RENDER_PARAM_D3D11_FBO = 22
 
         /** Bit of mpv_render_context_update()'s result: a new video frame should be rendered. */
         const val RENDER_UPDATE_FRAME = 1L

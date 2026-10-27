@@ -21,6 +21,8 @@ import com.nuvio.app.features.player.mpv.MpvPlayer
 import com.nuvio.app.features.streams.StreamSubtitle
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import org.jetbrains.skia.EncodedImageFormat
+import org.jetbrains.skia.Image
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.awt.image.BufferedImage
@@ -109,15 +111,24 @@ class DesktopPlayerSmokeTest {
         }
     }
 
-    /** How fast the software renderer keeps up on this machine; prints numbers, fails only on a stall. */
+    /**
+     * How fast the software renderer keeps up on this machine; prints numbers, fails only on a stall.
+     * `-Pnuvio.smoke.surface=1920x1080` sets the player area, `-Pnuvio.smoke.mpv=name=value;...` sets
+     * mpv properties after start, to compare settings.
+     */
     @Test
     fun measuresRenderThroughput() {
         assumeTrue(System.getProperty("nuvio.smoke") == "true")
         val video = testVideo()
         val player = MpvPlayer.create() ?: error("libmpv did not load")
         try {
-            player.surfaceWidth = 1280
-            player.surfaceHeight = 720
+            val (surfaceWidth, surfaceHeight) = (System.getProperty("nuvio.smoke.surface") ?: "1280x720")
+                .split('x').map(String::toInt)
+            player.surfaceWidth = surfaceWidth
+            player.surfaceHeight = surfaceHeight
+            System.getProperty("nuvio.smoke.mpv")?.split(';')?.filter { '=' in it }?.forEach {
+                player.setProperty(it.substringBefore('='), it.substringAfter('='))
+            }
             player.load(video.absolutePath, null, emptyMap(), emptyList(), null)
             val deadline = System.currentTimeMillis() + 20_000
             while (player.snapshot().let { it.isLoading || it.positionMs < 1_000 } && System.currentTimeMillis() < deadline) {
@@ -127,6 +138,10 @@ class DesktopPlayerSmokeTest {
             val cpuStart = os.processCpuTime
             val wallStart = System.nanoTime()
             val positionStart = player.snapshot().positionMs
+            // Counted over the measured window only: loading and the first second drop frames of their own.
+            fun drops() = listOf("frame-drop-count", "decoder-frame-drop-count", "vo-delayed-frame-count")
+                .map { player.getString(it)?.toLongOrNull() ?: 0L }
+            val dropsStart = drops()
             var frames = 0
             var last: MpvPlayer.Frame? = null
             var lastBitmapGeneration = -1
@@ -148,10 +163,21 @@ class DesktopPlayerSmokeTest {
             val played = (player.snapshot().positionMs - positionStart) / 1000.0
             val cpu = (os.processCpuTime - cpuStart) / 1e9 / wallSeconds / Runtime.getRuntime().availableProcessors() * 100
             val decoder = player.getString("hwdec-current")
-            val dropped = player.getString("frame-drop-count")
+            val (vo, dec, delayed) = drops().zip(dropsStart) { now, start -> now - start }
+            val dropped = "vo $vo, decoder $dec, delayed $delayed, filters [${player.getString("vf")}], " +
+                "mpv output ${player.getString("video-out-params/w")}x${player.getString("video-out-params/h")} " +
+                "${player.getString("video-out-params/pixelformat")}"
             val fps = player.getString("container-fps")
             val template = "player throughput: %.1f frames/s shown at %s (source %s fps), played %.1f s in %.1f s, " +
-                "decoder drops %s, hwdec %s, process CPU %.0f%% of all cores"
+                "drops: %s, hwdec %s, process CPU %.0f%% of all cores"
+            // The last frame, to look at the picture itself (colours, HDR conversion, orientation).
+            last?.let { frame ->
+                SwingUtilities.invokeAndWait {
+                    Image.makeFromBitmap(frame.bitmap).use { image ->
+                        File(out, "throughput-frame.png").writeBytes(image.encodeToData(EncodedImageFormat.PNG)!!.bytes)
+                    }
+                }
+            }
             println(template.format(frames / wallSeconds, size, fps, played, wallSeconds, dropped, decoder, cpu))
             assertTrue(played > wallSeconds * 0.9, "playback fell behind real time")
             assertTrue(frames / wallSeconds > 10, "the renderer stalled")

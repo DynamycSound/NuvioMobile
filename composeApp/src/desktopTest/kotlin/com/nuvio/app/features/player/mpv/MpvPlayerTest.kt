@@ -62,10 +62,11 @@ class MpvPlayerTest {
         assertEquals(360, loaded.videoHeight)
 
         val frame = waitFor("a rendered frame") { onUiThread { player.takeFrame() } }
-        // Never above the video's own size: the GPU scales it up to the 1280x720 surface.
-        assertEquals(640, frame.width)
-        assertEquals(360, frame.height)
-        val colors = (0 until 16).map { i -> frame.bitmap.getColor(i * 40 + 5, 180) }.toSet()
+        // The GPU renderer draws at the 1280x720 surface; the software one never above the video's
+        // own size, and Skia scales that up.
+        val expected = if (player.rendersOnGpu) 1280 to 720 else 640 to 360
+        assertEquals(expected, frame.width to frame.height)
+        val colors = (0 until 16).map { i -> frame.bitmap.getColor(i * frame.width / 16 + 5, frame.height / 2) }.toSet()
         assertTrue(colors.size > 2, "frame looks blank: ${colors.map { Integer.toHexString(it) }}")
 
         val tracks = waitFor("the extra audio and subtitle tracks") {

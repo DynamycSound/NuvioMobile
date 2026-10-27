@@ -25,8 +25,9 @@ class MpvSubtitleStyleTest {
         assertEquals("#FF000000", style.outlineColor)
         assertTrue(style.outlineSize > 0)
         assertTrue(style.boxMargin > 0)
-        // 22 sp on a 411 dp tall phone is 5.4 % of the height; libass draws ascent + descent in it.
-        assertEquals(45.1, style.fontSize, 0.1)
+        // 22 sp on a 411 dp tall phone is 5.4 % of the height; libass draws ascent + descent in it,
+        // and a monitor gets two thirds of that.
+        assertEquals(30.1, style.fontSize, 0.1)
         assertEquals(93, style.subPos)
     }
 

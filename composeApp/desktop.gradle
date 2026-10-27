@@ -177,12 +177,18 @@ kotlin {
 tasks.matching { it.name == 'desktopTest' }.configureEach {
     def smoke = project.hasProperty('nuvio.smoke')
     def smokeDir = layout.buildDirectory.dir('desktop-smoke')
+    // -Pnuvio.smoke.video=..., -Pnuvio.smoke.surface=1920x1080 and the like reach the tests. Read
+    // through the provider so the configuration cache sees them as inputs: project.properties is
+    // not tracked, and a cached run kept the options of an earlier one (2026-10-28).
+    def smokeOptions = providers.gradlePropertiesPrefixedBy('nuvio.smoke.')
     inputs.property('smoke', smoke)
+    inputs.property('smokeOptions', smokeOptions)
     doFirst {
         smokeDir.get().asFile.deleteDir()
         systemProperty('nuvio.smoke', smoke.toString())
         systemProperty('nuvio.dataDir', smokeDir.get().dir('data').asFile.absolutePath)
         systemProperty('nuvio.smoke.out', smokeDir.get().dir('shots').asFile.absolutePath)
+        smokeOptions.get().findAll { it.key != 'nuvio.smoke.out' }.each { name, value -> systemProperty(name, value) }
     }
     testLogging { showStandardStreams = true }
 }

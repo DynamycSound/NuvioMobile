@@ -7,7 +7,8 @@ import kotlin.math.roundToInt
 /**
  * The shared subtitle settings as mpv options, drawn the way Android's default player (ExoPlayer's
  * SubtitleView) draws them, since most people set them up on their phone: the background colour
- * as a box behind the text, the outline on top, and the size in sp of a phone held sideways.
+ * as a box behind the text, the outline on top, and the size in sp of a phone held sideways,
+ * scaled down for a monitor.
  *
  * mpv sizes are "scaled pixels at a window height of 720" and grow with the window.
  */
@@ -29,9 +30,13 @@ internal data class MpvSubtitleStyle(
         private const val SCALED_PX_PER_DP = 720.0 / PHONE_LANDSCAPE_HEIGHT_DP
         // libass fits ascent + descent into the font size, Android fits the em: Roboto's line is ~1.17 em.
         private const val LIBASS_SIZE_PER_ANDROID_TEXT_SIZE = 1.17
+        // A monitor fills far more of the view than a phone held sideways, so the phone's share of
+        // the height reads ~1.5x too big there (2026-10-27). Two thirds puts the 18 sp default at
+        // about 3.5 % of the window height, the size of desktop streaming sites' captions.
+        private const val DESKTOP_VIEWING_SCALE = 2.0 / 3.0
 
         fun from(style: SubtitleStyleState): MpvSubtitleStyle {
-            val fontSize = style.fontSizeSp * SCALED_PX_PER_DP * LIBASS_SIZE_PER_ANDROID_TEXT_SIZE
+            val fontSize = style.fontSizeSp * SCALED_PX_PER_DP * LIBASS_SIZE_PER_ANDROID_TEXT_SIZE * DESKTOP_VIEWING_SCALE
             val hasBackground = style.backgroundColor.alpha > 0f
             // ExoPlayer's SubtitleView: bottom padding is 2/3 of its default 8 %, plus the offset in tenths of a percent.
             val bottomFraction = (0.08 * 2 / 3 + (style.bottomOffset / 1000.0).coerceIn(0.0, 0.2)).coerceIn(0.0, 0.4)

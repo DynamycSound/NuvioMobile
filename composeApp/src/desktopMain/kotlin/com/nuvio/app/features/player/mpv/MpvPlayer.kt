@@ -31,12 +31,16 @@ import kotlin.math.roundToInt
 private const val TAG = "NuvioDesktopPlayer"
 
 /**
- * One libmpv instance with a software render context.
+ * One libmpv instance and its render context.
  *
- * mpv decodes (hardware decoding with copy-back) and renders each frame, subtitles included,
- * straight into the pixels of a Skia bitmap; Compose then draws that bitmap like any image, so
- * the shared player controls can sit on top of the video. A native child window would be faster
- * but always paints over Compose content, which would hide the controls.
+ * mpv decodes and renders each frame, subtitles included, at the player's size; the frame ends up
+ * in the pixels of a Skia bitmap and Compose draws it like any image, so the shared player
+ * controls can sit on top of the video. A native child window would skip the copy but always
+ * paints over Compose content, which would hide the controls.
+ *
+ * With a Direct3D 11 device ([gpu]) all of that happens on the GPU and only the finished frame is
+ * copied back; without one, mpv's software renderer does it on the CPU (hardware decoding with
+ * copy-back) straight into the bitmap.
  *
  * Threads: a render thread (woken by mpv's update callback), an event thread (mpv_wait_event),
  * and a loader thread for commands that may block on the network (loadfile, sub-add).
@@ -46,6 +50,7 @@ internal class MpvPlayer private constructor(
     private val lib: LibMpv,
     private val handle: Pointer,
     private val renderContext: Pointer,
+    private val gpu: D3D11FrameTarget?,
 ) {
     data class Track(
         val index: Int,
@@ -67,6 +72,9 @@ internal class MpvPlayer private constructor(
     @Volatile var surfaceWidth = 0
     @Volatile var surfaceHeight = 0
     @Volatile var cropToSurface = false
+
+    /** True when mpv renders with Direct3D 11, false on the software renderer. */
+    val rendersOnGpu: Boolean get() = gpu != null
 
     @Volatile private var videoWidth = 0
     @Volatile private var videoHeight = 0
@@ -92,6 +100,12 @@ internal class MpvPlayer private constructor(
         setInt(32, LibMpv.RENDER_PARAM_SW_STRIDE); setPointer(40, swStride)
         setInt(48, LibMpv.RENDER_PARAM_SW_POINTER)
         setInt(64, LibMpv.RENDER_PARAM_INVALID)
+    }
+    private val gpuTarget = Memory(8)
+    private val gpuRenderParams = Memory(16L * 2).apply {
+        clear()
+        setInt(0, LibMpv.RENDER_PARAM_D3D11_FBO); setPointer(8, gpuTarget)
+        setInt(16, LibMpv.RENDER_PARAM_INVALID)
     }
 
     private val loader = Executors.newSingleThreadExecutor { Thread(it, "mpv-loader").apply { isDaemon = true } }
@@ -146,12 +160,8 @@ internal class MpvPlayer private constructor(
     private fun renderFrame() {
         val (width, height) = targetSize() ?: return
         val frame = obtainFrame(width, height)
-        swSize.setInt(0, width)
-        swSize.setInt(4, height)
-        swStride.setLong(0, frame.rowBytes.toLong())
-        renderParams.setPointer(56, Pointer(frame.address))
-        val status = api(-1) { lib.mpv_render_context_render(renderContext, renderParams) }
-        if (status < 0) {
+        val rendered = if (gpu != null) renderOnGpu(gpu, frame) else renderInSoftware(frame)
+        if (!rendered) {
             freeFrames.add(frame)
             return
         }
@@ -160,9 +170,26 @@ internal class MpvPlayer private constructor(
         SwingUtilities.invokeLater { frameVersion.longValue++ }
     }
 
+    private fun renderOnGpu(gpu: D3D11FrameTarget, frame: Frame): Boolean {
+        gpuTarget.setPointer(0, gpu.texture(frame.width, frame.height))
+        val status = api(-1) { lib.mpv_render_context_render(renderContext, gpuRenderParams) }
+        return status >= 0 && gpu.copyTo(frame.address, frame.rowBytes, frame.height)
+    }
+
+    private fun renderInSoftware(frame: Frame): Boolean {
+        swSize.setInt(0, frame.width)
+        swSize.setInt(4, frame.height)
+        swStride.setLong(0, frame.rowBytes.toLong())
+        renderParams.setPointer(56, Pointer(frame.address))
+        return api(-1) { lib.mpv_render_context_render(renderContext, renderParams) } >= 0
+    }
+
     /**
-     * Video-shaped and never above the video's own size: upscaling on the CPU is slow, and Skia
-     * scales the frame on the GPU when it is drawn. Crop modes cover the surface instead of fitting it.
+     * Video-shaped, at the surface's size, which Skia then draws 1:1. Crop modes cover the surface
+     * instead of fitting it. Beyond a limit Skia scales the frame up instead:
+     * - the software renderer stays at or below the video's own size, since upscaling on the CPU is slow;
+     * - the GPU renderer stays within 1920x1080. On the T580's UHD 620 a 4K source took ~2 ms per
+     *   frame at 1080p and below but 37-44 ms at 1440p and 2160p, too slow for 24 fps (2026-10-28).
      */
     private fun targetSize(): Pair<Int, Int>? {
         val vw = videoWidth
@@ -174,7 +201,8 @@ internal class MpvPlayer private constructor(
         if (sw <= 0 || sh <= 0) return vw to vh
         val fit = min(sw.toDouble() / vw, sh.toDouble() / vh)
         val cover = max(sw.toDouble() / vw, sh.toDouble() / vh)
-        val scale = min(1.0, if (cropToSurface) cover else fit)
+        val limit = if (gpu == null) 1.0 else min(GPU_MAX_WIDTH.toDouble() / vw, GPU_MAX_HEIGHT.toDouble() / vh)
+        val scale = min(limit, if (cropToSurface) cover else fit)
         return max(2, (vw * scale).roundToInt()) to max(2, (vh * scale).roundToInt())
     }
 
@@ -456,7 +484,7 @@ internal class MpvPlayer private constructor(
 
     private fun getFlag(name: String): Boolean = getString(name) == "yes"
 
-    private fun setProperty(name: String, value: String) {
+    internal fun setProperty(name: String, value: String) {
         val status = api(0) { lib.mpv_set_property_string(handle, name, value) }
         if (status < 0) Logger.d(TAG) { "set $name failed: ${lib.mpv_error_string(status)}" }
     }
@@ -492,6 +520,8 @@ internal class MpvPlayer private constructor(
             lib.mpv_render_context_free(renderContext)
             lib.mpv_terminate_destroy(handle)
         }
+        // After mpv, which keeps its own reference to the device until it is destroyed.
+        gpu?.release()
         generateSequence { freeFrames.poll() }.forEach { it.bitmap.close() }
         pendingFrame.getAndSet(null)?.bitmap?.close()
         shownFrame?.bitmap?.close()
@@ -505,14 +535,23 @@ internal class MpvPlayer private constructor(
         fun create(): MpvPlayer? {
             val lib = LibMpv.instance ?: return null
             val handle = lib.mpv_create() ?: return null
+            val gpu = D3D11FrameTarget.create()
             listOf(
                 "vo" to "libmpv",
-                // The software renderer needs frames in RAM; auto-copy still decodes on the GPU.
-                "hwdec" to "auto-copy",
-                // Decode on mpv's own thread. Without it, a slow d3d11va copy-back stalled the
-                // playback core: light video (360p, or 12 fps) played at 75-87% speed with audio
+                // d3d11va hands decoded frames straight to the GPU renderer. The software renderer
+                // needs them in RAM, which auto-copy does while still decoding on the GPU.
+                "hwdec" to if (gpu != null) "auto-safe" else SOFTWARE_HWDEC,
+                // Chroma is half the size of the picture. mpv's default chroma scaler is a separate
+                // shader pass over the whole decoded frame, which took ~43 ms of GPU time per frame
+                // for a 4K HDR source on the T580's UHD 620, and the video stuttered; bilinear is
+                // sampled inside the main pass and took ~2 ms (2026-10-28). Other kernels took 37-40 ms.
+                "cscale" to "bilinear",
+                // Copy-back decodes on mpv's own thread. Without it, a slow d3d11va copy-back stalled
+                // the playback core: light video (360p, or 12 fps) played at 75-87% speed with audio
                 // gaps on the T580's Intel GPU (2026-10-27), while software decoding kept real time.
-                "vd-queue-enable" to "yes",
+                // Zero-copy d3d11va must not queue: queued frames hold the decoder's fixed surface
+                // pool, and a 4K HEVC stream ran out of it ("Static surface pool size exceeded").
+                "vd-queue-enable" to if (gpu != null) "no" else "yes",
                 "keep-open" to "yes",
                 "idle" to "yes",
                 "terminal" to "no",
@@ -531,23 +570,46 @@ internal class MpvPlayer private constructor(
             lib.mpv_request_log_messages(handle, "warn")
             if (lib.mpv_initialize(handle) < 0) {
                 lib.mpv_terminate_destroy(handle)
+                gpu?.release()
                 return null
             }
-            val apiType = Memory(3).apply { setString(0, "sw", "US-ASCII") }
-            val params = Memory(32).apply {
+            val gpuContext = gpu?.let { target ->
+                val initParams = Memory(8).apply { setPointer(0, target.device) }
+                createRenderContext(lib, handle, "d3d11", LibMpv.RENDER_PARAM_D3D11_INIT_PARAMS to initParams)
+            }
+            if (gpu != null && gpuContext == null) {
+                Logger.w(TAG) { "Direct3D 11 rendering is unavailable, rendering on the CPU" }
+                lib.mpv_set_property_string(handle, "hwdec", SOFTWARE_HWDEC)
+                gpu.release()
+            }
+            val renderContext = gpuContext ?: createRenderContext(lib, handle, "sw") ?: run {
+                lib.mpv_terminate_destroy(handle)
+                return null
+            }
+            return MpvPlayer(lib, handle, renderContext, gpu.takeIf { gpuContext != null }).also { it.start() }
+        }
+
+        private const val SOFTWARE_HWDEC = "auto-copy"
+        private const val GPU_MAX_WIDTH = 1920
+        private const val GPU_MAX_HEIGHT = 1080
+
+        private fun createRenderContext(lib: LibMpv, handle: Pointer, apiType: String, vararg extra: Pair<Int, Pointer>): Pointer? {
+            val apiTypeName = Memory(apiType.length + 1L).apply { setString(0, apiType, "US-ASCII") }
+            val entries = listOf(LibMpv.RENDER_PARAM_API_TYPE to apiTypeName) + extra
+            val params = Memory(16L * (entries.size + 1)).apply {
                 clear()
-                setInt(0, LibMpv.RENDER_PARAM_API_TYPE)
-                setPointer(8, apiType)
-                setInt(16, LibMpv.RENDER_PARAM_INVALID)
+                entries.forEachIndexed { index, (type, data) ->
+                    setInt(index * 16L, type)
+                    setPointer(index * 16L + 8, data)
+                }
             }
             val contextRef = PointerByReference()
             val status = lib.mpv_render_context_create(contextRef, handle, params)
             if (status < 0) {
-                Logger.w(TAG) { "mpv_render_context_create failed: ${lib.mpv_error_string(status)}" }
-                lib.mpv_terminate_destroy(handle)
+                Logger.w(TAG) { "mpv_render_context_create($apiType) failed: ${lib.mpv_error_string(status)}" }
                 return null
             }
-            return MpvPlayer(lib, handle, contextRef.value).also { it.start() }
+            return contextRef.value
         }
 
         private fun secondsString(ms: Long): String = String.format(Locale.ROOT, "%.3f", ms / 1000.0)
