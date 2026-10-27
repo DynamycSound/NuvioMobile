@@ -313,6 +313,8 @@ private class DesktopPlayerController(
         mpvMediaInfo { name -> player.getString(name)?.ifBlank { null } }
     }
 
+    override suspend fun getChapters(): List<PlayerChapter> = withContext(Dispatchers.IO) { player.chapters() }
+
     private fun trackId(type: String, index: Int): Int? =
         player.tracks().firstOrNull { it.type == type && it.index == index }?.id
 

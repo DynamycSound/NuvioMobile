@@ -1,5 +1,6 @@
 package com.nuvio.app.features.player.mpv
 
+import com.nuvio.app.features.player.PlayerChapter
 import com.nuvio.app.features.streams.StreamSubtitle
 import java.io.File
 import javax.swing.SwingUtilities
@@ -52,6 +53,10 @@ class MpvPlayerTest {
 
         val loaded = waitFor("the file to load") { player.snapshot().takeIf { !it.isLoading && it.durationMs > 0 } }
         assertTrue(loaded.durationMs in 89_900..90_100, "duration ${loaded.durationMs}")
+        assertEquals(
+            listOf(PlayerChapter(0, "Opening"), PlayerChapter(30_000, "Middle part")),
+            player.chapters(),
+        )
         assertTrue(loaded.positionMs >= 5_000, "started at ${loaded.positionMs} ms, not at the 5 s resume point")
         assertEquals(640, loaded.videoWidth)
         assertEquals(360, loaded.videoHeight)

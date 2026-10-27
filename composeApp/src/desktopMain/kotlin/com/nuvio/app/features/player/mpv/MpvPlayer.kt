@@ -2,6 +2,7 @@ package com.nuvio.app.features.player.mpv
 
 import androidx.compose.runtime.mutableLongStateOf
 import co.touchlab.kermit.Logger
+import com.nuvio.app.features.player.PlayerChapter
 import com.nuvio.app.features.player.PlayerPlaybackSnapshot
 import com.nuvio.app.features.player.sanitizePlaybackHeaders
 import com.nuvio.app.features.streams.StreamSubtitle
@@ -403,6 +404,18 @@ internal class MpvPlayer private constructor(
         )
     }
 
+    /** The file's chapters, read the same way as Android's libmpv engine. */
+    fun chapters(): List<PlayerChapter> {
+        val count = getString("chapter-list/count")?.toIntOrNull() ?: 0
+        return (0 until count).mapNotNull { i ->
+            val seconds = getString("chapter-list/$i/time")?.toDoubleOrNull() ?: return@mapNotNull null
+            PlayerChapter(
+                startMs = (seconds * 1000.0).toLong(),
+                title = getString("chapter-list/$i/title")?.trim()?.takeIf { it.isNotBlank() },
+            )
+        }
+    }
+
     fun tracks(): List<Track> {
         val count = getString("track-list/count")?.toIntOrNull() ?: 0
         var audioIndex = 0
@@ -504,6 +517,10 @@ internal class MpvPlayer private constructor(
                 "vo" to "libmpv",
                 // The software renderer needs frames in RAM; auto-copy still decodes on the GPU.
                 "hwdec" to "auto-copy",
+                // Decode on mpv's own thread. Without it, a slow d3d11va copy-back stalled the
+                // playback core: light video (360p, or 12 fps) played at 75-87% speed with audio
+                // gaps on the T580's Intel GPU (2026-10-27), while software decoding kept real time.
+                "vd-queue-enable" to "yes",
                 "keep-open" to "yes",
                 "idle" to "yes",
                 "terminal" to "no",
