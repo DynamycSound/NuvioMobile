@@ -137,3 +137,6 @@ private class IOSPlayerGestureController : PlayerGestureController {
         UIScreen.mainScreen.brightness = originalBrightness
     }
 }
+
+@Composable
+internal actual fun rememberHiddenPlayerPointerIcon(): androidx.compose.ui.input.pointer.PointerIcon? = null

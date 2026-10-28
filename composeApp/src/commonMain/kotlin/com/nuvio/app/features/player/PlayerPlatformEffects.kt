@@ -3,6 +3,7 @@ package com.nuvio.app.features.player
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.unit.IntSize
 
 interface PlayerGestureController {
@@ -65,3 +66,7 @@ fun rememberPlayerGestureController(restoreBrightness: Boolean): PlayerGestureCo
 
 @Composable
 internal expect fun rememberPlatformPlayerGestureController(): PlayerGestureController?
+
+/** The pointer over the video while the controls are hidden, or null to keep the default. */
+@Composable
+internal expect fun rememberHiddenPlayerPointerIcon(): PointerIcon?

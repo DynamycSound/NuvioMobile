@@ -225,3 +225,6 @@ private class AndroidPlayerGestureController(
             .coerceIn(0, 255)
             .toFloat() / 255f
 }
+
+@Composable
+internal actual fun rememberHiddenPlayerPointerIcon(): androidx.compose.ui.input.pointer.PointerIcon? = null

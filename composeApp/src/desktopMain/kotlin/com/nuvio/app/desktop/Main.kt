@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -22,7 +25,6 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.LocalWindowExceptionHandlerFactory
 import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -89,6 +91,7 @@ import com.nuvio.app.features.watchprogress.ResumePromptStorage
 import com.nuvio.app.features.watchprogress.WatchProgressStorage
 import org.jetbrains.skia.Image
 import java.awt.Dimension
+import java.awt.EventQueue
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 
@@ -155,9 +158,17 @@ internal fun initializePlatformStorage() {
 @OptIn(ExperimentalComposeUiApi::class)
 fun main(args: Array<String>) {
     DesktopCrashHandler.installThreadHandler()
+    val launchUrl = args.firstOrNull { it.contains("://") }
+    val onlyInstance = DesktopSingleInstance.claim(launchUrl) { url ->
+        EventQueue.invokeLater {
+            url?.let(::handleAppUrl)
+            DesktopWindowState.bringToFront()
+        }
+    }
+    if (!onlyInstance) return
     initializePlatformStorage()
     configureDesktopUpdates()
-    args.firstOrNull { it.contains("://") }?.let(::handleAppUrl)
+    launchUrl?.let(::handleAppUrl)
 
     application {
         val windowState = rememberWindowState(
@@ -168,6 +179,7 @@ fun main(args: Array<String>) {
             val bytes = DesktopTray::class.java.getResourceAsStream("/icons/nuvio.png")!!.use { it.readAllBytes() }
             BitmapPainter(Image.makeFromEncoded(bytes).toComposeImageBitmap())
         }
+        var escapeLeftFullscreen by remember { mutableStateOf(false) }
 
         CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides DesktopCrashHandler) {
             Window(
@@ -180,11 +192,24 @@ fun main(args: Array<String>) {
                 title = "Nuvio",
                 icon = icon,
                 onPreviewKeyEvent = { event ->
-                    if (event.type == KeyEventType.KeyDown && event.key == Key.F11) {
-                        DesktopWindowState.toggleFullscreen()
-                        true
-                    } else {
-                        DesktopPlayerKeys.handle(event)
+                    val keyDown = event.type == KeyEventType.KeyDown
+                    when {
+                        keyDown && event.key == Key.F11 -> {
+                            DesktopWindowState.toggleFullscreen()
+                            true
+                        }
+                        // In fullscreen Esc leaves fullscreen, like other players; otherwise it goes back.
+                        // Its release is swallowed too, so the back gesture does not see half a key press.
+                        keyDown && event.key == Key.Escape && DesktopWindowState.fullscreen.value -> {
+                            DesktopWindowState.setFullscreen(false)
+                            escapeLeftFullscreen = true
+                            true
+                        }
+                        event.key == Key.Escape && event.type == KeyEventType.KeyUp && escapeLeftFullscreen -> {
+                            escapeLeftFullscreen = false
+                            true
+                        }
+                        else -> DesktopPlayerKeys.handle(event)
                     }
                 },
             ) {
@@ -202,9 +227,8 @@ fun main(args: Array<String>) {
                     }
                 }
                 LaunchedEffect(Unit) {
-                    DesktopWindowState.fullscreen.collect { fullscreen ->
-                        windowState.placement = if (fullscreen) WindowPlacement.Fullscreen else WindowPlacement.Floating
-                    }
+                    // Runs on the AWT event thread, as DesktopFullscreen needs.
+                    DesktopWindowState.fullscreen.collect { fullscreen -> DesktopFullscreen.set(window, fullscreen) }
                 }
 
                 // Esc is already a back gesture in Compose desktop; the mouse "back" button is added here.
